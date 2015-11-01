@@ -25,7 +25,7 @@ unsigned long myChannelNumber=59727;
 const char * myWriteAPIKey="2BMATOYFUS6TLB5P";
 
 int now, pnow;
-bool SendTS;
+bool SendTS, SendTSDone;
 
 typedef struct {
     int pin;
@@ -43,6 +43,12 @@ LED_PARAM ledParams[3] = {
 };
 
 Thread* led1Thread;
+Thread* led2Thread;
+Thread* led3Thread;
+
+int As;
+
+bool FirstTime;
 
 /**
 * Declaring the variables.
@@ -68,6 +74,11 @@ bool ReadyToSend;
 int LoopN;
 int Diff, MinS;
 
+int Switch1[2] = {HIGH, LOW};;
+int Switch2[2] = {LOW, HIGH};;
+
+WLanSelectAntenna_TypeDef AntSel;
+
 
 void setup() {
 
@@ -75,15 +86,17 @@ void setup() {
 
   pinMode(D0, INPUT);
   pinMode(D1, OUTPUT);
+  pinMode(D2, OUTPUT);
+  pinMode(D3, OUTPUT);
   pinMode(D7, OUTPUT);
-  Psw = -1;
+
   Multiplier = 10.0;
   Volume = 0;
   MinS=20;
 //  myChannelNumber=59727;
 //  myWriteAPIKey="2BMATOYFUS6TLB5P";
   ThingSpeak.begin(client);
-  pnow = -20;
+  pnow = 0;
 
   Serial.begin(9600);
 
@@ -97,30 +110,90 @@ void setup() {
   StatRMin = 0;
   StatRMax = 255;
   StatR = StatRMin;
+  As = LOW;
   //analogWrite(D7, StatR);
 
   Dir = 1;
 
-  Version="2.0";
+  Version="2.4";
+
+  //Switch1 = {HIGH, LOW};
+  //Switch2 = {LOW, HIGH};
 
 
 
-  //led1Thread = new Thread("D7", ledBlink, &ledParams[0]);
+  led1Thread = new Thread("D7", ledBlink, &ledParams[0]);
+  led2Thread = new Thread("D7", Loop2, &ledParams[0]);
+  led3Thread = new Thread("D7", Loop3, &ledParams[0]);
+
+  SendTS = false;
+  SendTSDone = false;
+
+  FirstTime = true;
+
+  //AntSel = ANT_AUTO;
+  //AntSel = ANT_INTERNAL;
+  AntSel = ANT_EXTERNAL;
+
+  WiFi.selectAntenna(AntSel);
+
+
+
 }
 
 void loop() {
-    DoLoop();
+    //DoLoop();
+}
+
+void flashLED(){
+  //Particle.publish("SendTS Loop 3", String(SendTS));
+  for (i=0; i < 1; i=i+1) {
+      if (Stat == LOW){Stat=HIGH;}else{Stat=LOW;}
+      digitalWrite(D7, Stat);
+      Serial.print("D7 LED ");
+      Serial.println(Stat);
+      delay(500);
+  }
 }
 
 os_thread_return_t ledBlink(void* param){
     LED_PARAM *p = (LED_PARAM*)param;
 
     for(;;) {
-        //DoLoop();
-        digitalWrite(p->pin, HIGH);
-        delay(p->delay);
-        digitalWrite(p->pin, LOW);
-        delay(p->delay);
+        DoLoop();
+        //digitalWrite(p->pin, HIGH);
+        //delay(p->delay);
+        //digitalWrite(p->pin, LOW);
+        //delay(p->delay);
+    }
+}
+
+os_thread_return_t Loop2(void* param){
+    LED_PARAM *p = (LED_PARAM*)param;
+    int mySendTS;
+
+    for(;;) {
+      mySendTS = SendTS;
+      //Serial.print("SendTS ");
+      //Serial.println(SendTS);
+      //Particle.publish("SendTS Loop 2", String(SendTS));
+      digitalWrite(D3, mySendTS);
+      SendToService(mySendTS);
+      //As = !As;
+      //digitalWrite(D3, SendTS);
+      //delay(1000);
+      //digitalWrite(p->pin, HIGH);
+      //delay(p->delay);
+      //digitalWrite(p->pin, LOW);
+      //delay(p->delay);
+    }
+}
+
+os_thread_return_t Loop3(void* param){
+    LED_PARAM *p = (LED_PARAM*)param;
+
+    for(;;) {
+      flashLED();
     }
 }
 
@@ -130,88 +203,89 @@ void DoLoop() {
   Serial.print("Version ");
   Serial.println(Version);
 
+  sw = digitalRead(D0);
+
+  if ( FirstTime ) {
+    Psw = sw;
+    SVolume = String(Volume);
+    Particle.publish("Volume", SVolume);
+    ThingSpeak.setField(2,SVolume);
+    ReadyToSend = true;
+    FirstTime = false;
+    SendTS = true;
+    pnow = millis();
+  }
   LoopN = LoopN + 1;
 
   //Serial.println("Loop");
   //Serial.println(LoopN);
 
-  sw = digitalRead(D0);
 
-  digitalWrite(D1, sw);
 
-  Serial.print("Switch Before ");
-  Serial.print(String(Psw));
-  Serial.print("  Switch Now ");
-  Serial.println(String(sw));
+  digitalWrite(D1, Switch1[sw]);
+  digitalWrite(D2, Switch2[sw]);
 
-  now = millis();
-
-  Diff = (now - pnow)/1000;
-  Serial.print(String(Diff));
-  Serial.println(" Seconds");
-  if (Diff < MinS) {
-    SendTS = false;
-    Serial.print(String(MinS));
-    Serial.println(" too soon to send to Internet");
-  } else {
-    if ( ReadyToSend ) {
-        SendTS = true;
-        ReadyToSend = false;
-        Serial.println("Send this loop");
-    } else {
-        SendTS = false;
-        Serial.println("Nothing to send this loop");
-    }
-  }
-  Serial.print("SendTS ");
-  Serial.println(String(SendTS));
+  //Serial.print("Switch Before ");
+  //Serial.print(String(Psw));
+  //Serial.print("  Switch Now ");
+  //Serial.println(String(sw));
 
   if (sw != Psw ) {
-      Serial.println("Switch Change");
+      //Serial.println("Switch Change");
       Click = String(sw);
       if (sw == 0) {
         Serial.println("Switch Closed");
         Volume = Volume + Multiplier;
         SVolume = String(Volume);
         Particle.publish("Volume", SVolume);
-        //if ( SendTS ) {
-            ThingSpeak.setField(2,SVolume);
-        //}
+        ThingSpeak.setField(2,SVolume);
         ReadyToSend = true;
       } else {
         Serial.println("Switch Open");
       }
   }
 
-  Particle.publish("Click", Click);
+  now = millis();
+
+  Diff = (now - pnow)/1000;
+  //Serial.print(String(Diff));
+  //Serial.println(" Seconds");
+
+  if (SendTSDone) {
+    if (Diff < MinS) {
+      SendTS = false;
+      //Serial.print(String(MinS));
+      //Serial.println(" too soon to send to Internet");
+    } else {
+      if ( ReadyToSend ) {
+        SendTS = true;
+        ReadyToSend = false;
+        //Serial.println("Send this loop");
+      } else {
+        SendTS = false;
+        //Serial.println("Nothing to send this loop");
+      }
+    }
+  }
+
+  //Serial.print("SendTS ");
+  //Serial.println(String(SendTS));
+
+
+
+  //Particle.publish("Click", Click);
+  //Particle.publish("Seconds", String(Diff));
   //if ( SendTS ) {
-      ThingSpeak.setField(1,Click);
+      //ThingSpeak.setField(1,Click);
   //}
 
   SVolume = String(Volume);
-  Serial.print("Volume ");
-  Serial.println(SVolume);
-
-  if ( SendTS ) {
-
-    Serial.println("Sending to Internet");
-
-    Serial.print("Contacting Publish ");
-    Serial.println(String(millis()));
-
-    Particle.publish("SendTS", String(SendTS));
-    Serial.print("Contacted Publish ");
-    Serial.println(String(millis()));
-
-    Serial.print("Contacting ThingSpeak " );
-    Serial.println(String(millis()));
-    ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
-    Serial.print("Contacted ThingSpeak ");
-    Serial.println(String(millis()));
-    pnow = now;
-  }
+  //Serial.print("Volume ");
+  //Serial.println(SVolume);
 
 
+
+  //SendToService(SendTS);
 
   Psw = sw;
 
@@ -220,14 +294,6 @@ void DoLoop() {
 
   //Stat=LOW;
   //digitalWrite(D7, Stat);
-  for (i=0; i < 1; i=i+1) {
-      if (Stat == LOW){Stat=HIGH;}else{Stat=LOW;}
-      digitalWrite(D7, Stat);
-      Serial.print("D7 LED ");
-      Serial.println(Stat);
-      delay(500);
-
-  }
 
   StatR = StatR + 10*Dir;
 
@@ -246,6 +312,29 @@ void DoLoop() {
 
 }
 
+void SendToService(bool mySendTS) {
+
+  if ( mySendTS ) {
+
+    Particle.publish("SendTS SendToService", String(mySendTS));
+    //Serial.print("Contacting Publish ");
+    //Serial.println(String(millis()));
+
+    //Serial.print("Contacted Publish ");
+    //Serial.println(String(millis()));
+
+    //Serial.print("Contacting ThingSpeak " );
+    //Serial.println(String(millis()));
+    ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+    //Serial.print("Contacted ThingSpeak ");
+    //Serial.println(String(millis()));
+    pnow = now;
+
+    delay(10);
+    Particle.publish("SendTS SendToService End", String(mySendTS));
+    SendTSDone = true;
+  }
+}
 
 //void MessageS(const char* Line){
 //    Serial.println(Line);
