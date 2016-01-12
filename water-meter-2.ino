@@ -1,13 +1,13 @@
 // This #include statement was automatically added by the Particle IDE.
-#include "HttpClient/HttpClient.h"
+#include "HttpClient.h"
 
 // This #include statement was automatically added by the Particle IDE.
-#include "ThingSpeak/ThingSpeak.h"
+#include "ThingSpeak.h"
 
 #include "application.h"
 
 
-// Comment
+
 
 int sw, Psw;
 String Click;
@@ -16,36 +16,24 @@ float Multiplier;
 float Volume;
 int i;
 int Stat;
+String Version;
 
 TCPClient client;
 
+//ThingSpeak identifiers
 unsigned long myChannelNumber=MYCHANNELNUMBER;
-const char * myWriteAPIKey="MYKEY";
+const char * myWriteAPIKey="MYWRITEAPIKEY";
 
 int now, pnow;
-bool SendTS;
+bool SendTS, SendTSDone;
 
-typedef struct {
-    int pin;
-    int delay;
-} LED_PARAM;
+Thread* ThreadGetStatus;
+Thread* ThreadSendMessage;
+Thread* ThreadFlashLED;
 
-int led1 = D7;
-int led2 = D3;
-int led3 = D1;
+//If just after switch on then send status to ThingSpeak
+bool FirstTime;
 
-LED_PARAM ledParams[3] = {
-    {led1, 500},
-    {led2, 500},
-    {led3, 500}
-};
-
-Thread* led1Thread;
-
-/**
-* Declaring the variables.
-*/
-unsigned int nextTime = 0;    // Next time to contact the server
 HttpClient http;
 
 // Headers currently need to be set at init, useful for API keys etc.
@@ -63,161 +51,181 @@ String Line;
 
 bool ReadyToSend;
 
-int LoopN;
 int Diff, MinS;
+
+//Sets LED response to switch position
+//D1 Set Green
+int Switch1[2] = {HIGH, LOW};
+//D2 Set Blue
+int Switch2[2] = {LOW, HIGH};
+
+WLanSelectAntenna_TypeDef AntSel;
 
 
 void setup() {
 
 
-
+//Switch
   pinMode(D0, INPUT);
+//Multicoloured LED
   pinMode(D1, OUTPUT);
+  pinMode(D2, OUTPUT);
+  pinMode(D3, OUTPUT);
+//Onboard Blue LED
   pinMode(D7, OUTPUT);
-  Psw = -1;
+
+//Each closed contact on the switch is 10litres of water
   Multiplier = 10.0;
+//Inital Volume used
   Volume = 0;
+//Time between checks to send to ThinkSpeak
   MinS=20;
 
   ThingSpeak.begin(client);
-  pnow = -20;
+  pnow = 0;
 
   Serial.begin(9600);
-  
-  ReadyToSend = true;
-  
-  LoopN = 0;
-  
-  Stat = LOW;
-  digitalWrite(D7, Stat);
-  
-  
 
-  //led1Thread = new Thread("D7", ledBlink, &ledParams[0]);
+  ReadyToSend = true;
+
+  Stat = LOW;
+// Turn onboard Blue LED off
+  digitalWrite(D7, Stat);
+
+  Version="2.5";
+
+//Get Threads ready
+  ThreadGetStatus = new Thread("Get Switch Status", LoopGetStatus);
+  ThreadSendMessage = new Thread("Send Message to ThingSpeak", LoopSendMessage);
+  ThreadFlashLED = new Thread("Flash the onboard Blue LED", LoopFlashLED);
+
+  SendTS = false;
+  SendTSDone = false;
+
+  FirstTime = true;
+
+// Select internal or external antenna
+  //AntSel = ANT_AUTO;
+  //AntSel = ANT_INTERNAL;
+  AntSel = ANT_EXTERNAL;
+
+  WiFi.selectAntenna(AntSel);
 }
 
 void loop() {
-    DoLoop();
+    //Main loop does nothing
 }
 
-os_thread_return_t ledBlink(void* param){
-    LED_PARAM *p = (LED_PARAM*)param;
-    
+//Flash the Blue onboard LED
+void FlashLED(){
+//Could do somehting more fancy here
+  for (i=0; i < 1; i=i+1) {
+      if (Stat == LOW){Stat=HIGH;}else{Stat=LOW;}
+      digitalWrite(D7, Stat);
+      Serial.print("D7 LED ");
+      Serial.println(Stat);
+      delay(500);
+  }
+}
+
+//Get the status of the water meter switch
+os_thread_return_t LoopGetStatus(void* param){
     for(;;) {
-        //DoLoop();
-        digitalWrite(p->pin, HIGH);
-        delay(p->delay);
-        digitalWrite(p->pin, LOW);
-        delay(p->delay);
+        GetStatus();
+    }
+}
+
+//Sets Blue LED pin on multicoloured LED if sending to ThinkSpeak
+os_thread_return_t LoopSendMessage(void* param){
+    int mySendTS;
+    for(;;) {
+      mySendTS = SendTS;
+
+      digitalWrite(D3, mySendTS);
+      SendToService(mySendTS);
+
+    }
+}
+
+//Flashes onboard Blue LED
+os_thread_return_t LoopFlashLED(void* param){
+    for(;;) {
+      FlashLED();
     }
 }
 
 
-void DoLoop() {
+// Reads switch status and prepare signal to ThingSpeak
+void GetStatus() {
 
-  LoopN = LoopN + 1;
-  
-  //Serial.println("Loop");
-  //Serial.println(LoopN);
-  
+  Serial.print("Version ");
+  Serial.println(Version);
+
   sw = digitalRead(D0);
 
-  digitalWrite(D1, sw);
-  
-  Serial.print("Switch Before ");
-  Serial.print(String(Psw));
-  Serial.print("  Switch Now ");
-  Serial.println(String(sw));
-  
-  now = millis();
-  
-  Diff = (now - pnow)/1000;
-  Serial.print(String(Diff));
-  Serial.println(" Seconds");
-  if (Diff < MinS) {
-    SendTS = false;
-    Serial.print(String(MinS));
-    Serial.println(" too soon to send to Internet");
-  } else {
-    if ( ReadyToSend ) {
-        SendTS = true;
-        ReadyToSend = false;
-        Serial.println("Send this loop");
-    } else {
-        SendTS = false;
-        Serial.println("Nothing to send this loop");
-    }
+// If just turned on then send data to ThingSpeak
+  if ( FirstTime ) {
+    Psw = sw;
+    SVolume = String(Volume);
+    Particle.publish("Volume", SVolume);
+    ThingSpeak.setField(2,SVolume);
+    ReadyToSend = true;
+    FirstTime = false;
+    SendTS = true;
+    pnow = millis();
   }
-  Serial.print("SendTS ");
-  Serial.println(String(SendTS));
+
+//Set multicoloured LED
+  digitalWrite(D1, Switch1[sw]);
+  digitalWrite(D2, Switch2[sw]);
 
   if (sw != Psw ) {
-      Serial.println("Switch Change");
+      //Serial.println("Switch Change");
       Click = String(sw);
       if (sw == 0) {
         Serial.println("Switch Closed");
         Volume = Volume + Multiplier;
         SVolume = String(Volume);
         Particle.publish("Volume", SVolume);
-        //if ( SendTS ) {
-            ThingSpeak.setField(2,SVolume);
-        //}
+        ThingSpeak.setField(2,SVolume);
         ReadyToSend = true;
       } else {
         Serial.println("Switch Open");
       }
   }
-  
-  Particle.publish("Click", Click);
-  //if ( SendTS ) {
-      ThingSpeak.setField(1,Click);
-  //}
+
+  now = millis();
+
+  Diff = (now - pnow)/1000;
+
+  if (SendTSDone) {
+    if (Diff < MinS) {
+      SendTS = false;
+    } else {
+      if ( ReadyToSend ) {
+        SendTS = true;
+        ReadyToSend = false;
+      } else {
+        SendTS = false;
+      }
+    }
+  }
 
   SVolume = String(Volume);
-  Serial.print("Volume ");
-  Serial.println(SVolume);
-  
-  if ( SendTS ) {
-      
-    Serial.println("Sending to Internet");
 
-    Serial.print("Contacting Publish ");
-    Serial.println(String(millis()));
-    
-    Particle.publish("SendTS", String(SendTS));
-    Serial.print("Contacted Publish ");
-    Serial.println(String(millis()));
-    
-    Serial.print("Contacting ThingSpeak " );
-    Serial.println(String(millis()));
-    ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
-    Serial.print("Contacted ThingSpeak ");
-    Serial.println(String(millis()));
-    pnow = now;
-  }
-
-
-
+//Previous switch state
   Psw = sw;
-  
-
-
-
-  //Stat=LOW;
-  //digitalWrite(D7, Stat);
-  for (i=0; i < 1; i=i+1) {
-      if (Stat == LOW){Stat=HIGH;}else{Stat=LOW;}
-      digitalWrite(D7, Stat);
-      //Serial.print("D7 LED ");
-      //Serial.println(Stat);
-      delay(500);
-      
-  }
 
 }
 
+void SendToService(bool mySendTS) {
 
-//void MessageS(const char* Line){
-//    Serial.println(Line);
-//}
-
+  if ( mySendTS ) {
+    Particle.publish("SendTS SendToService", String(mySendTS));
+    ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+    pnow = now;
+    delay(10);
+    Particle.publish("SendTS SendToService End", String(mySendTS));
+    SendTSDone = true;
+  }
+}
